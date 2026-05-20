@@ -1,0 +1,114 @@
+name: Apply PlugLayer Env and Restart
+description: Merge CI-provided env vars onto an existing PlugLayer app and then restart or redeploy it.
+
+inputs:
+  api_token:
+    description: PlugLayer API token stored in GitHub secrets.
+    required: true
+  app_id:
+    description: Existing PlugLayer app id.
+    required: true
+  env_json:
+    description: Optional JSON object of env vars to merge, usually from a GitHub secret.
+    required: false
+    default: ""
+  merge:
+    description: Merge env vars onto the existing env set.
+    required: false
+    default: "true"
+  restart_mode:
+    description: One of restart, redeploy, or none.
+    required: false
+    default: restart
+  api_url:
+    description: PlugLayer API base URL.
+    required: false
+    default: https://api.pluglayer.com
+
+outputs:
+  task_id:
+    description: Restart/redeploy task id if one was queued.
+    value: ${{ steps.apply.outputs.task_id }}
+
+runs:
+  using: composite
+  steps:
+    - id: apply
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        BODY_FILE="$(mktemp)"
+        PAYLOAD_FILE="$(mktemp)"
+
+        python3 - "$PAYLOAD_FILE" <<'PY'
+import json
+import os
+import sys
+
+env_json = os.environ.get("PLUGLAYER_ENV_JSON", "").strip()
+if env_json:
+    env_vars = json.loads(env_json)
+    if not isinstance(env_vars, dict):
+        raise SystemExit("env_json must be a JSON object")
+else:
+    env_vars = {}
+
+payload = {
+    "env_vars": env_vars,
+    "merge": os.environ.get("PLUGLAYER_MERGE", "true").lower() != "false",
+    "restart_mode": os.environ.get("PLUGLAYER_RESTART_MODE", "restart"),
+}
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(payload, fh)
+PY
+
+        STATUS="$(
+          curl -sS -o "$BODY_FILE" -w "%{http_code}" \
+            -X POST "${{ inputs.api_url }}/v1/plugin/apps/${{ inputs.app_id }}/env/apply" \
+            -H "Authorization: Bearer ${{ inputs.api_token }}" \
+            -H "Content-Type: application/json" \
+            --data-binary "@$PAYLOAD_FILE"
+        )"
+
+        if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+          python3 - "$BODY_FILE" "$STATUS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+body = Path(sys.argv[1]).read_text()
+status = sys.argv[2]
+detail = body.strip()
+try:
+    payload = json.loads(body)
+    if isinstance(payload, dict):
+        detail = (
+            payload.get("detail")
+            or payload.get("message")
+            or (payload.get("data") or {}).get("detail")
+            or (payload.get("data") or {}).get("message")
+            or (payload.get("data") or {}).get("error_message")
+            or detail
+        )
+except Exception:
+    pass
+print(f"PlugLayer env apply failed ({status}): {detail}", file=sys.stderr)
+PY
+          exit 1
+        fi
+
+        python3 - "$BODY_FILE" "$GITHUB_OUTPUT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+data = payload.get("data") if isinstance(payload, dict) and payload.get("ok") is True else payload
+with open(sys.argv[2], "a", encoding="utf-8") as fh:
+    fh.write(f"task_id={(data or {}).get('task_id', '')}\n")
+PY
+      env:
+        PLUGLAYER_ENV_JSON: ${{ inputs.env_json }}
+        PLUGLAYER_MERGE: ${{ inputs.merge }}
+        PLUGLAYER_RESTART_MODE: ${{ inputs.restart_mode }}

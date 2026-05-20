@@ -1,0 +1,95 @@
+name: Upload Image to PlugLayer
+description: Upload an OCI image archive to PlugLayer and attach it to an existing app without restarting yet.
+
+inputs:
+  api_token:
+    description: PlugLayer API token stored in GitHub secrets.
+    required: true
+  app_id:
+    description: Existing PlugLayer app id.
+    required: true
+  archive_path:
+    description: Path to the OCI archive to upload.
+    required: true
+  image_tag:
+    description: Image tag/version to store on the app.
+    required: true
+  api_url:
+    description: PlugLayer API base URL.
+    required: false
+    default: https://api.pluglayer.com
+  registry_id:
+    description: Optional PlugLayer registry id override.
+    required: false
+    default: ""
+
+outputs:
+  mirrored_image:
+    description: Mirrored image reference created by PlugLayer.
+    value: ${{ steps.upload.outputs.mirrored_image }}
+  app_id:
+    description: App id that was updated.
+    value: ${{ steps.upload.outputs.app_id }}
+
+runs:
+  using: composite
+  steps:
+    - id: upload
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [[ ! -f "${{ inputs.archive_path }}" ]]; then
+          echo "Archive not found: ${{ inputs.archive_path }}" >&2
+          exit 1
+        fi
+
+        BODY_FILE="$(mktemp)"
+        STATUS="$(
+          curl -sS -o "$BODY_FILE" -w "%{http_code}" \
+            -X POST "${{ inputs.api_url }}/v1/plugin/apps/${{ inputs.app_id }}/upload-image" \
+            -H "Authorization: Bearer ${{ inputs.api_token }}" \
+            -F "archive=@${{ inputs.archive_path }}" \
+            -F "tag=${{ inputs.image_tag }}" \
+            -F "registry_id=${{ inputs.registry_id }}"
+        )"
+
+        if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+          python3 - "$BODY_FILE" "$STATUS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+body = Path(sys.argv[1]).read_text()
+status = sys.argv[2]
+detail = body.strip()
+try:
+    payload = json.loads(body)
+    if isinstance(payload, dict):
+        detail = (
+            payload.get("detail")
+            or payload.get("message")
+            or (payload.get("data") or {}).get("detail")
+            or (payload.get("data") or {}).get("message")
+            or (payload.get("data") or {}).get("error_message")
+            or detail
+        )
+except Exception:
+    pass
+print(f"PlugLayer image upload failed ({status}): {detail}", file=sys.stderr)
+PY
+          exit 1
+        fi
+
+        python3 - "$BODY_FILE" "$GITHUB_OUTPUT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+data = payload.get("data") if isinstance(payload, dict) and payload.get("ok") is True else payload
+app = (data or {}).get("app") or {}
+with open(sys.argv[2], "a", encoding="utf-8") as fh:
+    fh.write(f"mirrored_image={(data or {}).get('mirrored_image', '')}\n")
+    fh.write(f"app_id={app.get('id', '')}\n")
+PY

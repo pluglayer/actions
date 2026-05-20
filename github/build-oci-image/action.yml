@@ -1,0 +1,59 @@
+name: Build OCI Image
+description: Build a multi-architecture OCI image archive for PlugLayer deployments.
+
+inputs:
+  context:
+    description: Docker build context path.
+    required: false
+    default: .
+  dockerfile:
+    description: Optional Dockerfile path.
+    required: false
+    default: ""
+  image_name:
+    description: Image name used only for tagging the local build.
+    required: true
+  image_tag:
+    description: Image tag/version used for the local build.
+    required: true
+  archive_path:
+    description: OCI archive output path.
+    required: true
+  platforms:
+    description: Target platforms for the OCI archive.
+    required: false
+    default: linux/amd64,linux/arm64
+
+outputs:
+  archive_path:
+    description: Built OCI archive path.
+    value: ${{ steps.build.outputs.archive_path }}
+
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v3
+
+    - id: build
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        mkdir -p "$(dirname "${{ inputs.archive_path }}")"
+
+        ARGS=(
+          docker buildx build
+          --platform "${{ inputs.platforms }}"
+          --output "type=oci,dest=${{ inputs.archive_path }}"
+          --tag "${{ inputs.image_name }}:${{ inputs.image_tag }}"
+        )
+
+        if [[ -n "${{ inputs.dockerfile }}" ]]; then
+          ARGS+=( -f "${{ inputs.dockerfile }}" )
+        fi
+
+        ARGS+=( "${{ inputs.context }}" )
+
+        "${ARGS[@]}"
+
+        echo "archive_path=${{ inputs.archive_path }}" >> "$GITHUB_OUTPUT"
