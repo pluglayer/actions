@@ -42,26 +42,26 @@ runs:
         PAYLOAD_FILE="$(mktemp)"
 
         python3 - "$PAYLOAD_FILE" <<'PY'
-import json
-import os
-import sys
+        import json
+        import os
+        import sys
 
-env_json = os.environ.get("PLUGLAYER_ENV_JSON", "").strip()
-if env_json:
-    env_vars = json.loads(env_json)
-    if not isinstance(env_vars, dict):
-        raise SystemExit("env_json must be a JSON object")
-else:
-    env_vars = {}
+        env_json = os.environ.get("PLUGLAYER_ENV_JSON", "").strip()
+        if env_json:
+            env_vars = json.loads(env_json)
+            if not isinstance(env_vars, dict):
+                raise SystemExit("env_json must be a JSON object")
+        else:
+            env_vars = {}
 
-payload = {
-    "env_vars": env_vars,
-    "merge": os.environ.get("PLUGLAYER_MERGE", "true").lower() != "false",
-    "restart_mode": os.environ.get("PLUGLAYER_RESTART_MODE", "restart"),
-}
-with open(sys.argv[1], "w", encoding="utf-8") as fh:
-    json.dump(payload, fh)
-PY
+        payload = {
+            "env_vars": env_vars,
+            "merge": os.environ.get("PLUGLAYER_MERGE", "true").lower() != "false",
+            "restart_mode": os.environ.get("PLUGLAYER_RESTART_MODE", "restart"),
+        }
+        with open(sys.argv[1], "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        PY
 
         STATUS="$(
           curl -sS -o "$BODY_FILE" -w "%{http_code}" \
@@ -73,41 +73,41 @@ PY
 
         if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
           python3 - "$BODY_FILE" "$STATUS" <<'PY'
-import json
-import sys
-from pathlib import Path
+          import json
+          import sys
+          from pathlib import Path
 
-body = Path(sys.argv[1]).read_text()
-status = sys.argv[2]
-detail = body.strip()
-try:
-    payload = json.loads(body)
-    if isinstance(payload, dict):
-        detail = (
-            payload.get("detail")
-            or payload.get("message")
-            or (payload.get("data") or {}).get("detail")
-            or (payload.get("data") or {}).get("message")
-            or (payload.get("data") or {}).get("error_message")
-            or detail
-        )
-except Exception:
-    pass
-print(f"PlugLayer env apply failed ({status}): {detail}", file=sys.stderr)
-PY
+          body = Path(sys.argv[1]).read_text()
+          status = sys.argv[2]
+          detail = body.strip()
+          try:
+              payload = json.loads(body)
+              if isinstance(payload, dict):
+                  detail = (
+                      payload.get("detail")
+                      or payload.get("message")
+                      or (payload.get("data") or {}).get("detail")
+                      or (payload.get("data") or {}).get("message")
+                      or (payload.get("data") or {}).get("error_message")
+                      or detail
+                  )
+          except Exception:
+              pass
+          print(f"PlugLayer env apply failed ({status}): {detail}", file=sys.stderr)
+          PY
           exit 1
         fi
 
         python3 - "$BODY_FILE" "$GITHUB_OUTPUT" <<'PY'
-import json
-import sys
-from pathlib import Path
+        import json
+        import sys
+        from pathlib import Path
 
-payload = json.loads(Path(sys.argv[1]).read_text())
-data = payload.get("data") if isinstance(payload, dict) and payload.get("ok") is True else payload
-with open(sys.argv[2], "a", encoding="utf-8") as fh:
-    fh.write(f"task_id={(data or {}).get('task_id', '')}\n")
-PY
+        payload = json.loads(Path(sys.argv[1]).read_text())
+        data = payload.get("data") if isinstance(payload, dict) and payload.get("ok") is True else payload
+        with open(sys.argv[2], "a", encoding="utf-8") as fh:
+            fh.write(f"task_id={(data or {}).get('task_id', '')}\n")
+        PY
       env:
         PLUGLAYER_ENV_JSON: ${{ inputs.env_json }}
         PLUGLAYER_MERGE: ${{ inputs.merge }}
