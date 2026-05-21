@@ -1,0 +1,72 @@
+name: Redeploy PlugLayer App
+description: Redeploy an existing PlugLayer app so it rolls out the most recently uploaded image.
+
+inputs:
+  api_token:
+    description: PlugLayer API token stored in GitHub secrets.
+    required: true
+  app_id:
+    description: Existing PlugLayer app id.
+    required: true
+  api_url:
+    description: PlugLayer API base URL.
+    required: false
+    default: https://api.pluglayer.com
+
+outputs:
+  task_id:
+    description: Redeploy task id queued by PlugLayer.
+    value: ${{ steps.redeploy.outputs.task_id }}
+
+runs:
+  using: composite
+  steps:
+    - id: redeploy
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        BODY_FILE="$(mktemp)"
+        STATUS="$(
+          curl -sS -o "$BODY_FILE" -w "%{http_code}" \
+            -X POST "${{ inputs.api_url }}/v1/plugin/apps/${{ inputs.app_id }}/redeploy" \
+            -H "Authorization: Bearer ${{ inputs.api_token }}"
+        )"
+
+        if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+          python3 - "$BODY_FILE" "$STATUS" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          body = Path(sys.argv[1]).read_text()
+          status = sys.argv[2]
+          detail = body.strip()
+          try:
+              payload = json.loads(body)
+              if isinstance(payload, dict):
+                  detail = (
+                      payload.get("detail")
+                      or payload.get("message")
+                      or (payload.get("data") or {}).get("detail")
+                      or (payload.get("data") or {}).get("message")
+                      or (payload.get("data") or {}).get("error_message")
+                      or detail
+                  )
+          except Exception:
+              pass
+          print(f"PlugLayer app redeploy failed ({status}): {detail}", file=sys.stderr)
+          PY
+          exit 1
+        fi
+
+        python3 - "$BODY_FILE" "$GITHUB_OUTPUT" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+
+        payload = json.loads(Path(sys.argv[1]).read_text())
+        data = payload.get("data") if isinstance(payload, dict) and payload.get("ok") is True else payload
+        with open(sys.argv[2], "a", encoding="utf-8") as fh:
+            fh.write(f"task_id={(data or {}).get('task_id', '')}\n")
+        PY

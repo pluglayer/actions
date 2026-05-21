@@ -23,6 +23,10 @@ inputs:
     description: Target platforms for the OCI archive.
     required: false
     default: linux/amd64,linux/arm64
+  build_env_json:
+    description: Optional JSON object of build-time env vars/build args to inject into docker buildx.
+    required: false
+    default: ""
 
 outputs:
   archive_path:
@@ -50,6 +54,38 @@ runs:
 
         if [[ -n "${{ inputs.dockerfile }}" ]]; then
           ARGS+=( -f "${{ inputs.dockerfile }}" )
+        fi
+
+        if [[ -n "${{ inputs.build_env_json }}" ]]; then
+          while IFS= read -r build_arg; do
+            [[ -n "$build_arg" ]] || continue
+            ARGS+=( --build-arg "$build_arg" )
+          done < <(
+            BUILD_ENV_JSON='${{ inputs.build_env_json }}' python3 - <<'PY'
+            import json
+            import os
+            import sys
+
+            raw = os.environ.get("BUILD_ENV_JSON", "").strip()
+            if not raw:
+                sys.exit(0)
+
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                print(f"Invalid build_env_json: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+            if not isinstance(payload, dict):
+                print("build_env_json must be a JSON object of key/value pairs", file=sys.stderr)
+                sys.exit(1)
+
+            for key, value in payload.items():
+                if value is None:
+                    continue
+                print(f"{key}={value}")
+            PY
+          )
         fi
 
         ARGS+=( "${{ inputs.context }}" )
