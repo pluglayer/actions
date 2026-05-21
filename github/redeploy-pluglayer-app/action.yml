@@ -26,11 +26,7 @@ runs:
       run: |
         set -euo pipefail
 
-        API_URL="$(python3 - <<'PY'
-        import os
-        print((os.environ.get("PLUGLAYER_API_URL_RAW") or "").strip())
-        PY
-        )"
+        API_URL="$(printf '%s' "$PLUGLAYER_API_URL_RAW" | tr -d '\r\n' | sed 's/[[:space:]]*$//')"
 
         BODY_FILE="$(mktemp)"
         STATUS="$(
@@ -40,42 +36,13 @@ runs:
         )"
 
         if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
-          python3 - "$BODY_FILE" "$STATUS" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          body = Path(sys.argv[1]).read_text()
-          status = sys.argv[2]
-          detail = body.strip()
-          try:
-              payload = json.loads(body)
-              if isinstance(payload, dict):
-                  detail = (
-                      payload.get("detail")
-                      or payload.get("message")
-                      or (payload.get("data") or {}).get("detail")
-                      or (payload.get("data") or {}).get("message")
-                      or (payload.get("data") or {}).get("error_message")
-                      or detail
-                  )
-          except Exception:
-              pass
-          print(f"PlugLayer app redeploy failed ({status}): {detail}", file=sys.stderr)
-          PY
+          export BODY_FILE STATUS
+          python3 -c 'import json, os, sys; from pathlib import Path; body = Path(os.environ["BODY_FILE"]).read_text(); status = os.environ["STATUS"]; detail = body.strip(); ns = {"json": json, "body": body}; exec("try:\\n payload=json.loads(body)\\nexcept Exception:\\n payload=None", ns); payload = ns.get("payload"); detail = (payload.get("detail") or payload.get("message") or (payload.get("data") or {}).get("detail") or (payload.get("data") or {}).get("message") or (payload.get("data") or {}).get("error_message") or detail) if isinstance(payload, dict) else detail; print(f"PlugLayer app redeploy failed ({status}): {detail}", file=sys.stderr)'
           exit 1
         fi
 
-        python3 - "$BODY_FILE" "$GITHUB_OUTPUT" <<'PY'
-        import json
-        import sys
-        from pathlib import Path
-
-        payload = json.loads(Path(sys.argv[1]).read_text())
-        data = payload.get("data") if isinstance(payload, dict) and payload.get("ok") is True else payload
-        with open(sys.argv[2], "a", encoding="utf-8") as fh:
-            fh.write(f"task_id={(data or {}).get('task_id', '')}\n")
-        PY
+        export BODY_FILE GITHUB_OUTPUT
+        python3 -c 'import json, os; from pathlib import Path; payload = json.loads(Path(os.environ["BODY_FILE"]).read_text()); data = payload.get("data") if isinstance(payload, dict) and payload.get("ok") is True else payload; fh = open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8"); fh.write(f"task_id={(data or {}).get(\"task_id\", \"\")}\n"); fh.close()'
       env:
         PLUGLAYER_API_TOKEN: ${{ inputs.api_token }}
         PLUGLAYER_APP_ID: ${{ inputs.app_id }}

@@ -57,35 +57,14 @@ runs:
         fi
 
         if [[ -n "$PLUGLAYER_BUILD_ENV_JSON" ]]; then
+          BUILD_ARGS_FILE="$(mktemp)"
+          export BUILD_ARGS_FILE
+          python3 -c 'import json, os, sys; raw=os.environ.get("PLUGLAYER_BUILD_ENV_JSON","").strip(); path=os.environ["BUILD_ARGS_FILE"]; payload={} if not raw else json.loads(raw); isinstance(payload, dict) or (_ for _ in ()).throw(SystemExit("build_env_json must be a JSON object of key/value pairs")); open(path, "w", encoding="utf-8").write("".join(f"{k}={v}\n" for k, v in payload.items() if v is not None))'
           while IFS= read -r build_arg; do
             [[ -n "$build_arg" ]] || continue
             ARGS+=( --build-arg "$build_arg" )
-          done < <(
-            python3 - <<'PY'
-            import json
-            import os
-            import sys
-
-            raw = os.environ.get("PLUGLAYER_BUILD_ENV_JSON", "").strip()
-            if not raw:
-                sys.exit(0)
-
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                print(f"Invalid build_env_json: {exc}", file=sys.stderr)
-                sys.exit(1)
-
-            if not isinstance(payload, dict):
-                print("build_env_json must be a JSON object of key/value pairs", file=sys.stderr)
-                sys.exit(1)
-
-            for key, value in payload.items():
-                if value is None:
-                    continue
-                print(f"{key}={value}")
-            PY
-          )
+          done < "$BUILD_ARGS_FILE"
+          rm -f "$BUILD_ARGS_FILE"
         fi
 
         ARGS+=( "$PLUGLAYER_CONTEXT" )
