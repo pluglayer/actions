@@ -26,11 +26,17 @@ runs:
       run: |
         set -euo pipefail
 
+        API_URL="$(python3 - <<'PY'
+        import os
+        print((os.environ.get("PLUGLAYER_API_URL_RAW") or "").strip())
+        PY
+        )"
+
         BODY_FILE="$(mktemp)"
         STATUS="$(
           curl -sS -o "$BODY_FILE" -w "%{http_code}" \
-            -X POST "${{ inputs.api_url }}/v1/plugin/apps/${{ inputs.app_id }}/redeploy" \
-            -H "Authorization: Bearer ${{ inputs.api_token }}"
+            -X POST "${API_URL}/v1/plugin/apps/${PLUGLAYER_APP_ID}/redeploy" \
+            -H "Authorization: Bearer ${PLUGLAYER_API_TOKEN}"
         )"
 
         if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
@@ -70,3 +76,7 @@ runs:
         with open(sys.argv[2], "a", encoding="utf-8") as fh:
             fh.write(f"task_id={(data or {}).get('task_id', '')}\n")
         PY
+      env:
+        PLUGLAYER_API_TOKEN: ${{ inputs.api_token }}
+        PLUGLAYER_APP_ID: ${{ inputs.app_id }}
+        PLUGLAYER_API_URL_RAW: ${{ inputs.api_url }}

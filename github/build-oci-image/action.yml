@@ -43,30 +43,30 @@ runs:
       run: |
         set -euo pipefail
 
-        mkdir -p "$(dirname "${{ inputs.archive_path }}")"
+        mkdir -p "$(dirname "$PLUGLAYER_ARCHIVE_PATH")"
 
         ARGS=(
           docker buildx build
-          --platform "${{ inputs.platforms }}"
-          --output "type=oci,dest=${{ inputs.archive_path }}"
-          --tag "${{ inputs.image_name }}:${{ inputs.image_tag }}"
+          --platform "$PLUGLAYER_PLATFORMS"
+          --output "type=oci,dest=$PLUGLAYER_ARCHIVE_PATH"
+          --tag "$PLUGLAYER_IMAGE_NAME:$PLUGLAYER_IMAGE_TAG"
         )
 
-        if [[ -n "${{ inputs.dockerfile }}" ]]; then
-          ARGS+=( -f "${{ inputs.dockerfile }}" )
+        if [[ -n "$PLUGLAYER_DOCKERFILE" ]]; then
+          ARGS+=( -f "$PLUGLAYER_DOCKERFILE" )
         fi
 
-        if [[ -n "${{ inputs.build_env_json }}" ]]; then
+        if [[ -n "$PLUGLAYER_BUILD_ENV_JSON" ]]; then
           while IFS= read -r build_arg; do
             [[ -n "$build_arg" ]] || continue
             ARGS+=( --build-arg "$build_arg" )
           done < <(
-            BUILD_ENV_JSON='${{ inputs.build_env_json }}' python3 - <<'PY'
+            python3 - <<'PY'
             import json
             import os
             import sys
 
-            raw = os.environ.get("BUILD_ENV_JSON", "").strip()
+            raw = os.environ.get("PLUGLAYER_BUILD_ENV_JSON", "").strip()
             if not raw:
                 sys.exit(0)
 
@@ -88,8 +88,16 @@ runs:
           )
         fi
 
-        ARGS+=( "${{ inputs.context }}" )
+        ARGS+=( "$PLUGLAYER_CONTEXT" )
 
         "${ARGS[@]}"
 
-        echo "archive_path=${{ inputs.archive_path }}" >> "$GITHUB_OUTPUT"
+        echo "archive_path=$PLUGLAYER_ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
+      env:
+        PLUGLAYER_CONTEXT: ${{ inputs.context }}
+        PLUGLAYER_DOCKERFILE: ${{ inputs.dockerfile }}
+        PLUGLAYER_IMAGE_NAME: ${{ inputs.image_name }}
+        PLUGLAYER_IMAGE_TAG: ${{ inputs.image_tag }}
+        PLUGLAYER_ARCHIVE_PATH: ${{ inputs.archive_path }}
+        PLUGLAYER_PLATFORMS: ${{ inputs.platforms }}
+        PLUGLAYER_BUILD_ENV_JSON: ${{ inputs.build_env_json }}
