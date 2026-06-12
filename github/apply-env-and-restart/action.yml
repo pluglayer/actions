@@ -1,5 +1,5 @@
 name: Apply PlugLayer Env and Restart
-description: Merge CI-provided env vars onto an existing PlugLayer app and then restart or redeploy it.
+description: Merge CI-provided env vars onto an existing PlugLayer app, restart or redeploy it, and wait for the queued task to finish.
 
 inputs:
   api_token:
@@ -24,11 +24,26 @@ inputs:
     description: PlugLayer API base URL.
     required: false
     default: https://api.pluglayer.com
+  wait_for_completion:
+    description: Poll the queued restart/redeploy task so the CI job reflects the real outcome.
+    required: false
+    default: "true"
+  wait_timeout_seconds:
+    description: Maximum seconds to wait for the queued task to finish.
+    required: false
+    default: "900"
+  poll_interval_seconds:
+    description: Seconds between task status polls.
+    required: false
+    default: "10"
 
 outputs:
   task_id:
     description: Restart/redeploy task id if one was queued.
     value: ${{ steps.apply.outputs.task_id }}
+  final_status:
+    description: completed, failed, cancelled, timeout, queued when waiting is disabled, or none when no task was queued.
+    value: ${{ steps.wait.outputs.final_status }}
 
 runs:
   using: composite
@@ -37,34 +52,48 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-
-        BODY_FILE="$(mktemp)"
-        PAYLOAD_FILE="$(mktemp)"
-        API_URL="$(printf '%s' "$PLUGLAYER_API_URL_RAW" | tr -d '\r\n' | sed 's/[[:space:]]*$//')"
-
-        export PAYLOAD_FILE
-        python3 -c 'import json, os, sys; env_json = os.environ.get("PLUGLAYER_ENV_JSON", "").strip(); env_vars = json.loads(env_json) if env_json else {}; isinstance(env_vars, dict) or (_ for _ in ()).throw(SystemExit("env_json must be a JSON object")); payload = {"env_vars": env_vars, "merge": os.environ.get("PLUGLAYER_MERGE", "true").lower() != "false", "restart_mode": os.environ.get("PLUGLAYER_RESTART_MODE", "restart")}; open(os.environ["PAYLOAD_FILE"], "w", encoding="utf-8").write(json.dumps(payload))'
-
-        STATUS="$(
-          curl -sS -o "$BODY_FILE" -w "%{http_code}" \
-            -X POST "${API_URL}/v1/plugin/apps/${PLUGLAYER_APP_ID}/env/apply" \
-            -H "Authorization: Bearer ${PLUGLAYER_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data-binary "@$PAYLOAD_FILE"
-        )"
-
-        if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
-          export BODY_FILE STATUS
-          python3 -c 'import json, os, sys; from pathlib import Path; body = Path(os.environ["BODY_FILE"]).read_text(); status = os.environ["STATUS"]; detail = body.strip(); ns = {"json": json, "body": body}; exec("try:\\n payload=json.loads(body)\\nexcept Exception:\\n payload=None", ns); payload = ns.get("payload"); detail = (payload.get("detail") or payload.get("message") or (payload.get("data") or {}).get("detail") or (payload.get("data") or {}).get("message") or (payload.get("data") or {}).get("error_message") or detail) if isinstance(payload, dict) else detail; print(f"PlugLayer env apply failed ({status}): {detail}", file=sys.stderr)'
+        PL="${GITHUB_ACTION_PATH}/../_lib/pl.py"
+        API_URL="$(printf '%s' "$PLUGLAYER_API_URL" | tr -d '[:space:]')"
+        PAYLOAD="$(mktemp)"
+        python3 "$PL" env-payload > "$PAYLOAD"
+        BODY="$(mktemp)"
+        CODE="$(curl -sS -o "$BODY" -w '%{http_code}' --retry 3 --retry-delay 3 \
+          -X POST "${API_URL%/}/v1/plugin/apps/${PLUGLAYER_APP_ID}/env/apply" \
+          -H "Authorization: Bearer ${PLUGLAYER_API_TOKEN}" \
+          -H "Content-Type: application/json" \
+          --data-binary "@$PAYLOAD")"
+        if [[ "$CODE" -lt 200 || "$CODE" -ge 300 ]]; then
+          echo "PlugLayer env apply failed (${CODE}): $(python3 "$PL" detail "$BODY")" >&2
           exit 1
         fi
-
-        export BODY_FILE GITHUB_OUTPUT
-        python3 -c 'import json, os; from pathlib import Path; payload = json.loads(Path(os.environ["BODY_FILE"]).read_text()); data = payload.get("data") if isinstance(payload, dict) and payload.get("ok") is True else payload; fh = open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8"); fh.write(f"task_id={(data or {}).get(\"task_id\", \"\")}\n"); fh.close()'
+        python3 "$PL" outputs "$BODY" task_id
       env:
         PLUGLAYER_API_TOKEN: ${{ inputs.api_token }}
         PLUGLAYER_APP_ID: ${{ inputs.app_id }}
-        PLUGLAYER_API_URL_RAW: ${{ inputs.api_url }}
+        PLUGLAYER_API_URL: ${{ inputs.api_url }}
         PLUGLAYER_ENV_JSON: ${{ inputs.env_json }}
         PLUGLAYER_MERGE: ${{ inputs.merge }}
         PLUGLAYER_RESTART_MODE: ${{ inputs.restart_mode }}
+
+    - id: wait
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -z "$PLUGLAYER_TASK_ID" ]]; then
+          echo "final_status=none" >> "$GITHUB_OUTPUT"
+          echo "Env applied; no restart/redeploy task was queued."
+          exit 0
+        fi
+        if [[ "${PLUGLAYER_WAIT,,}" != "true" ]]; then
+          echo "final_status=queued" >> "$GITHUB_OUTPUT"
+          echo "Task ${PLUGLAYER_TASK_ID} queued; waiting disabled."
+          exit 0
+        fi
+        python3 "${GITHUB_ACTION_PATH}/../_lib/pl.py" wait-task "$PLUGLAYER_TASK_ID"
+      env:
+        PLUGLAYER_API_TOKEN: ${{ inputs.api_token }}
+        PLUGLAYER_API_URL: ${{ inputs.api_url }}
+        PLUGLAYER_TASK_ID: ${{ steps.apply.outputs.task_id }}
+        PLUGLAYER_WAIT: ${{ inputs.wait_for_completion }}
+        PLUGLAYER_WAIT_TIMEOUT: ${{ inputs.wait_timeout_seconds }}
+        PLUGLAYER_POLL_INTERVAL: ${{ inputs.poll_interval_seconds }}

@@ -38,36 +38,28 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-
-        API_URL="$(printf '%s' "$PLUGLAYER_API_URL_RAW" | tr -d '\r\n' | sed 's/[[:space:]]*$//')"
-
+        PL="${GITHUB_ACTION_PATH}/../_lib/pl.py"
+        API_URL="$(printf '%s' "$PLUGLAYER_API_URL" | tr -d '[:space:]')"
         if [[ ! -f "$PLUGLAYER_ARCHIVE_PATH" ]]; then
           echo "Archive not found: $PLUGLAYER_ARCHIVE_PATH" >&2
           exit 1
         fi
-
-        BODY_FILE="$(mktemp)"
-        STATUS="$(
-          curl -sS -o "$BODY_FILE" -w "%{http_code}" \
-            -X POST "${API_URL}/v1/plugin/apps/${PLUGLAYER_APP_ID}/upload-image" \
-            -H "Authorization: Bearer ${PLUGLAYER_API_TOKEN}" \
-            -F "archive=@${PLUGLAYER_ARCHIVE_PATH}" \
-            -F "tag=${PLUGLAYER_IMAGE_TAG}" \
-            -F "registry_id=${PLUGLAYER_REGISTRY_ID}"
-        )"
-
-        if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
-          export BODY_FILE STATUS
-          python3 -c 'import json, os, sys; from pathlib import Path; body = Path(os.environ["BODY_FILE"]).read_text(); status = os.environ["STATUS"]; detail = body.strip(); ns = {"json": json, "body": body}; exec("try:\\n payload=json.loads(body)\\nexcept Exception:\\n payload=None", ns); payload = ns.get("payload"); detail = (payload.get("detail") or payload.get("message") or (payload.get("data") or {}).get("detail") or (payload.get("data") or {}).get("message") or (payload.get("data") or {}).get("error_message") or detail) if isinstance(payload, dict) else detail; print(f"PlugLayer image upload failed ({status}): {detail}", file=sys.stderr)'
+        BODY="$(mktemp)"
+        CODE="$(curl -sS -o "$BODY" -w '%{http_code}' --retry 3 --retry-delay 5 --max-time 1800 \
+          -X POST "${API_URL%/}/v1/plugin/apps/${PLUGLAYER_APP_ID}/upload-image" \
+          -H "Authorization: Bearer ${PLUGLAYER_API_TOKEN}" \
+          -F "archive=@${PLUGLAYER_ARCHIVE_PATH}" \
+          -F "tag=${PLUGLAYER_IMAGE_TAG}" \
+          -F "registry_id=${PLUGLAYER_REGISTRY_ID}")"
+        if [[ "$CODE" -lt 200 || "$CODE" -ge 300 ]]; then
+          echo "PlugLayer image upload failed (${CODE}): $(python3 "$PL" detail "$BODY")" >&2
           exit 1
         fi
-
-        export BODY_FILE GITHUB_OUTPUT
-        python3 -c 'import json, os; from pathlib import Path; payload = json.loads(Path(os.environ["BODY_FILE"]).read_text()); data = payload.get("data") if isinstance(payload, dict) and payload.get("ok") is True else payload; app = (data or {}).get("app") or {}; fh = open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8"); fh.write(f"mirrored_image={(data or {}).get(\"mirrored_image\", \"\")}\n"); fh.write(f"app_id={app.get(\"id\", \"\")}\n"); fh.close()'
+        python3 "$PL" outputs "$BODY" mirrored_image app_id=app.id
       env:
         PLUGLAYER_API_TOKEN: ${{ inputs.api_token }}
         PLUGLAYER_APP_ID: ${{ inputs.app_id }}
         PLUGLAYER_ARCHIVE_PATH: ${{ inputs.archive_path }}
         PLUGLAYER_IMAGE_TAG: ${{ inputs.image_tag }}
-        PLUGLAYER_API_URL_RAW: ${{ inputs.api_url }}
+        PLUGLAYER_API_URL: ${{ inputs.api_url }}
         PLUGLAYER_REGISTRY_ID: ${{ inputs.registry_id }}

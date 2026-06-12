@@ -58,11 +58,11 @@ runs:
 
         if [[ -n "$PLUGLAYER_BUILD_ENV_JSON" ]]; then
           BUILD_ARGS_FILE="$(mktemp)"
-          export BUILD_ARGS_FILE
-          python3 -c 'import json, os, sys; raw=os.environ.get("PLUGLAYER_BUILD_ENV_JSON","").strip(); path=os.environ["BUILD_ARGS_FILE"]; payload={} if not raw else json.loads(raw); isinstance(payload, dict) or (_ for _ in ()).throw(SystemExit("build_env_json must be a JSON object of key/value pairs")); open(path, "w", encoding="utf-8").write("".join(f"{k}={v}\n" for k, v in payload.items() if v is not None))'
+          python3 "${GITHUB_ACTION_PATH}/../_lib/pl.py" build-args > "$BUILD_ARGS_FILE"
           while IFS= read -r build_arg; do
-            [[ -n "$build_arg" ]] || continue
-            ARGS+=( --build-arg "$build_arg" )
+            if [[ -n "$build_arg" ]]; then
+              ARGS+=( --build-arg "$build_arg" )
+            fi
           done < "$BUILD_ARGS_FILE"
           rm -f "$BUILD_ARGS_FILE"
         fi
