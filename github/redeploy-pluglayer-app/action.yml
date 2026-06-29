@@ -1,0 +1,80 @@
+name: Redeploy PlugLayer App
+description: Redeploy an existing PlugLayer app so it rolls out the most recently uploaded image, then wait for the rollout task to finish.
+
+inputs:
+  api_token:
+    description: PlugLayer API token stored in GitHub secrets.
+    required: true
+  app_id:
+    description: Existing PlugLayer app id.
+    required: true
+  api_url:
+    description: PlugLayer API base URL.
+    required: false
+    default: https://api.pluglayer.com
+  wait_for_completion:
+    description: Poll the redeploy task so the CI job reflects the real rollout outcome.
+    required: false
+    default: "true"
+  wait_timeout_seconds:
+    description: Maximum seconds to wait for the rollout task to finish.
+    required: false
+    default: "900"
+  poll_interval_seconds:
+    description: Seconds between rollout task status polls.
+    required: false
+    default: "10"
+
+outputs:
+  task_id:
+    description: Redeploy task id queued by PlugLayer.
+    value: ${{ steps.redeploy.outputs.task_id }}
+  final_status:
+    description: completed, failed, cancelled, timeout, or queued when waiting is disabled.
+    value: ${{ steps.wait.outputs.final_status }}
+
+runs:
+  using: composite
+  steps:
+    - id: redeploy
+      shell: bash
+      run: |
+        set -euo pipefail
+        PL="${GITHUB_ACTION_PATH}/../_lib/pl.py"
+        API_URL="$(printf '%s' "$PLUGLAYER_API_URL" | tr -d '[:space:]')"
+        BODY="$(mktemp)"
+        CODE="$(curl -sS -o "$BODY" -w '%{http_code}' --retry 3 --retry-delay 3 \
+          -X POST "${API_URL%/}/v1/plugin/apps/${PLUGLAYER_APP_ID}/redeploy" \
+          -H "Authorization: Bearer ${PLUGLAYER_API_TOKEN}")"
+        if [[ "$CODE" -lt 200 || "$CODE" -ge 300 ]]; then
+          echo "PlugLayer app redeploy failed (${CODE}): $(python3 "$PL" detail "$BODY")" >&2
+          exit 1
+        fi
+        python3 "$PL" outputs "$BODY" task_id
+      env:
+        PLUGLAYER_API_TOKEN: ${{ inputs.api_token }}
+        PLUGLAYER_APP_ID: ${{ inputs.app_id }}
+        PLUGLAYER_API_URL: ${{ inputs.api_url }}
+
+    - id: wait
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${PLUGLAYER_WAIT,,}" != "true" ]]; then
+          echo "final_status=queued" >> "$GITHUB_OUTPUT"
+          echo "Redeploy queued (task ${PLUGLAYER_TASK_ID:-unknown}); waiting disabled."
+          exit 0
+        fi
+        if [[ -z "$PLUGLAYER_TASK_ID" ]]; then
+          echo "final_status=unknown" >> "$GITHUB_OUTPUT"
+          echo "Redeploy accepted but no task id was returned; cannot verify the rollout." >&2
+          exit 1
+        fi
+        python3 "${GITHUB_ACTION_PATH}/../_lib/pl.py" wait-task "$PLUGLAYER_TASK_ID"
+      env:
+        PLUGLAYER_API_TOKEN: ${{ inputs.api_token }}
+        PLUGLAYER_API_URL: ${{ inputs.api_url }}
+        PLUGLAYER_TASK_ID: ${{ steps.redeploy.outputs.task_id }}
+        PLUGLAYER_WAIT: ${{ inputs.wait_for_completion }}
+        PLUGLAYER_WAIT_TIMEOUT: ${{ inputs.wait_timeout_seconds }}
+        PLUGLAYER_POLL_INTERVAL: ${{ inputs.poll_interval_seconds }}
