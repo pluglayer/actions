@@ -1,0 +1,65 @@
+name: Upload Image to PlugLayer
+description: Upload an OCI image archive to PlugLayer and attach it to an existing app without restarting yet.
+
+inputs:
+  api_token:
+    description: PlugLayer API token stored in GitHub secrets.
+    required: true
+  app_id:
+    description: Existing PlugLayer app id.
+    required: true
+  archive_path:
+    description: Path to the OCI archive to upload.
+    required: true
+  image_tag:
+    description: Image tag/version to store on the app.
+    required: true
+  api_url:
+    description: PlugLayer API base URL.
+    required: false
+    default: https://api.pluglayer.com
+  registry_id:
+    description: Optional PlugLayer registry id override.
+    required: false
+    default: ""
+
+outputs:
+  mirrored_image:
+    description: Mirrored image reference created by PlugLayer.
+    value: ${{ steps.upload.outputs.mirrored_image }}
+  app_id:
+    description: App id that was updated.
+    value: ${{ steps.upload.outputs.app_id }}
+
+runs:
+  using: composite
+  steps:
+    - id: upload
+      shell: bash
+      run: |
+        set -euo pipefail
+        PL="${GITHUB_ACTION_PATH}/../_lib/pl.py"
+        API_URL="$(printf '%s' "$PLUGLAYER_API_URL" | tr -d '[:space:]')"
+        if [[ ! -f "$PLUGLAYER_ARCHIVE_PATH" ]]; then
+          echo "Archive not found: $PLUGLAYER_ARCHIVE_PATH" >&2
+          exit 1
+        fi
+        BODY="$(mktemp)"
+        CODE="$(curl -sS -o "$BODY" -w '%{http_code}' --retry 3 --retry-delay 5 --max-time 1800 \
+          -X POST "${API_URL%/}/v1/plugin/apps/${PLUGLAYER_APP_ID}/upload-image" \
+          -H "Authorization: Bearer ${PLUGLAYER_API_TOKEN}" \
+          -F "archive=@${PLUGLAYER_ARCHIVE_PATH}" \
+          -F "tag=${PLUGLAYER_IMAGE_TAG}" \
+          -F "registry_id=${PLUGLAYER_REGISTRY_ID}")"
+        if [[ "$CODE" -lt 200 || "$CODE" -ge 300 ]]; then
+          echo "PlugLayer image upload failed (${CODE}): $(python3 "$PL" detail "$BODY")" >&2
+          exit 1
+        fi
+        python3 "$PL" outputs "$BODY" mirrored_image app_id=app.id
+      env:
+        PLUGLAYER_API_TOKEN: ${{ inputs.api_token }}
+        PLUGLAYER_APP_ID: ${{ inputs.app_id }}
+        PLUGLAYER_ARCHIVE_PATH: ${{ inputs.archive_path }}
+        PLUGLAYER_IMAGE_TAG: ${{ inputs.image_tag }}
+        PLUGLAYER_API_URL: ${{ inputs.api_url }}
+        PLUGLAYER_REGISTRY_ID: ${{ inputs.registry_id }}

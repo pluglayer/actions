@@ -1,0 +1,99 @@
+name: Apply PlugLayer Env and Restart
+description: Merge CI-provided env vars onto an existing PlugLayer app, restart or redeploy it, and wait for the queued task to finish.
+
+inputs:
+  api_token:
+    description: PlugLayer API token stored in GitHub secrets.
+    required: true
+  app_id:
+    description: Existing PlugLayer app id.
+    required: true
+  env_json:
+    description: Optional JSON object of env vars to merge, usually from a GitHub secret.
+    required: false
+    default: ""
+  merge:
+    description: Merge env vars onto the existing env set.
+    required: false
+    default: "true"
+  restart_mode:
+    description: One of restart, redeploy, or none.
+    required: false
+    default: restart
+  api_url:
+    description: PlugLayer API base URL.
+    required: false
+    default: https://api.pluglayer.com
+  wait_for_completion:
+    description: Poll the queued restart/redeploy task so the CI job reflects the real outcome.
+    required: false
+    default: "true"
+  wait_timeout_seconds:
+    description: Maximum seconds to wait for the queued task to finish.
+    required: false
+    default: "900"
+  poll_interval_seconds:
+    description: Seconds between task status polls.
+    required: false
+    default: "10"
+
+outputs:
+  task_id:
+    description: Restart/redeploy task id if one was queued.
+    value: ${{ steps.apply.outputs.task_id }}
+  final_status:
+    description: completed, failed, cancelled, timeout, queued when waiting is disabled, or none when no task was queued.
+    value: ${{ steps.wait.outputs.final_status }}
+
+runs:
+  using: composite
+  steps:
+    - id: apply
+      shell: bash
+      run: |
+        set -euo pipefail
+        PL="${GITHUB_ACTION_PATH}/../_lib/pl.py"
+        API_URL="$(printf '%s' "$PLUGLAYER_API_URL" | tr -d '[:space:]')"
+        PAYLOAD="$(mktemp)"
+        python3 "$PL" env-payload > "$PAYLOAD"
+        BODY="$(mktemp)"
+        CODE="$(curl -sS -o "$BODY" -w '%{http_code}' --retry 3 --retry-delay 3 \
+          -X POST "${API_URL%/}/v1/plugin/apps/${PLUGLAYER_APP_ID}/env/apply" \
+          -H "Authorization: Bearer ${PLUGLAYER_API_TOKEN}" \
+          -H "Content-Type: application/json" \
+          --data-binary "@$PAYLOAD")"
+        if [[ "$CODE" -lt 200 || "$CODE" -ge 300 ]]; then
+          echo "PlugLayer env apply failed (${CODE}): $(python3 "$PL" detail "$BODY")" >&2
+          exit 1
+        fi
+        python3 "$PL" outputs "$BODY" task_id
+      env:
+        PLUGLAYER_API_TOKEN: ${{ inputs.api_token }}
+        PLUGLAYER_APP_ID: ${{ inputs.app_id }}
+        PLUGLAYER_API_URL: ${{ inputs.api_url }}
+        PLUGLAYER_ENV_JSON: ${{ inputs.env_json }}
+        PLUGLAYER_MERGE: ${{ inputs.merge }}
+        PLUGLAYER_RESTART_MODE: ${{ inputs.restart_mode }}
+
+    - id: wait
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -z "$PLUGLAYER_TASK_ID" ]]; then
+          echo "final_status=none" >> "$GITHUB_OUTPUT"
+          echo "Env applied; no restart/redeploy task was queued."
+          exit 0
+        fi
+        if [[ "${PLUGLAYER_WAIT,,}" != "true" ]]; then
+          echo "final_status=queued" >> "$GITHUB_OUTPUT"
+          echo "Task ${PLUGLAYER_TASK_ID} queued; waiting disabled."
+          exit 0
+        fi
+        python3 "${GITHUB_ACTION_PATH}/../_lib/pl.py" wait-task "$PLUGLAYER_TASK_ID"
+      env:
+        PLUGLAYER_API_TOKEN: ${{ inputs.api_token }}
+        PLUGLAYER_API_URL: ${{ inputs.api_url }}
+        PLUGLAYER_TASK_ID: ${{ steps.apply.outputs.task_id }}
+        PLUGLAYER_WAIT: ${{ inputs.wait_for_completion }}
+        PLUGLAYER_WAIT_TIMEOUT: ${{ inputs.wait_timeout_seconds }}
+        PLUGLAYER_POLL_INTERVAL: ${{ inputs.poll_interval_seconds }}

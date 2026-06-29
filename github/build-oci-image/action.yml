@@ -1,0 +1,82 @@
+name: Build OCI Image
+description: Build a multi-architecture OCI image archive for PlugLayer deployments.
+
+inputs:
+  context:
+    description: Docker build context path.
+    required: false
+    default: .
+  dockerfile:
+    description: Optional Dockerfile path.
+    required: false
+    default: ""
+  image_name:
+    description: Image name used only for tagging the local build.
+    required: true
+  image_tag:
+    description: Image tag/version used for the local build.
+    required: true
+  archive_path:
+    description: OCI archive output path.
+    required: true
+  platforms:
+    description: Target platforms for the OCI archive.
+    required: false
+    default: linux/amd64,linux/arm64
+  build_env_json:
+    description: Optional JSON object of build-time env vars/build args to inject into docker buildx.
+    required: false
+    default: ""
+
+outputs:
+  archive_path:
+    description: Built OCI archive path.
+    value: ${{ steps.build.outputs.archive_path }}
+
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v3
+
+    - id: build
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        mkdir -p "$(dirname "$PLUGLAYER_ARCHIVE_PATH")"
+
+        ARGS=(
+          docker buildx build
+          --platform "$PLUGLAYER_PLATFORMS"
+          --output "type=oci,dest=$PLUGLAYER_ARCHIVE_PATH"
+          --tag "$PLUGLAYER_IMAGE_NAME:$PLUGLAYER_IMAGE_TAG"
+        )
+
+        if [[ -n "$PLUGLAYER_DOCKERFILE" ]]; then
+          ARGS+=( -f "$PLUGLAYER_DOCKERFILE" )
+        fi
+
+        if [[ -n "$PLUGLAYER_BUILD_ENV_JSON" ]]; then
+          BUILD_ARGS_FILE="$(mktemp)"
+          python3 "${GITHUB_ACTION_PATH}/../_lib/pl.py" build-args > "$BUILD_ARGS_FILE"
+          while IFS= read -r build_arg; do
+            if [[ -n "$build_arg" ]]; then
+              ARGS+=( --build-arg "$build_arg" )
+            fi
+          done < "$BUILD_ARGS_FILE"
+          rm -f "$BUILD_ARGS_FILE"
+        fi
+
+        ARGS+=( "$PLUGLAYER_CONTEXT" )
+
+        "${ARGS[@]}"
+
+        echo "archive_path=$PLUGLAYER_ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
+      env:
+        PLUGLAYER_CONTEXT: ${{ inputs.context }}
+        PLUGLAYER_DOCKERFILE: ${{ inputs.dockerfile }}
+        PLUGLAYER_IMAGE_NAME: ${{ inputs.image_name }}
+        PLUGLAYER_IMAGE_TAG: ${{ inputs.image_tag }}
+        PLUGLAYER_ARCHIVE_PATH: ${{ inputs.archive_path }}
+        PLUGLAYER_PLATFORMS: ${{ inputs.platforms }}
+        PLUGLAYER_BUILD_ENV_JSON: ${{ inputs.build_env_json }}
