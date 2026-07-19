@@ -9,9 +9,21 @@ inputs:
     description: Existing PlugLayer app id.
     required: true
   env_json:
-    description: Optional JSON object of env vars to merge, usually from a GitHub secret.
+    description: Optional JSON object of runtime env vars, usually from a masked GitHub secret. Mutually exclusive with env_text and env_file.
     required: false
     default: ""
+  env_text:
+    description: Optional dotenv/KEY=VALUE, JSON, or YAML text. Mutually exclusive with env_json and env_file.
+    required: false
+    default: ""
+  env_file:
+    description: Optional UTF-8 .env, .json, .yaml, or .yml file on the runner. Symlinks and files over 64 KiB are rejected.
+    required: false
+    default: ""
+  env_format:
+    description: Input format for env_text or env_file; one of auto, dotenv, json, or yaml. Auto also infers common file extensions.
+    required: false
+    default: auto
   merge:
     description: Merge env vars onto the existing env set.
     required: false
@@ -20,6 +32,10 @@ inputs:
     description: One of restart, redeploy, or none.
     required: false
     default: restart
+  redeploy_strategy:
+    description: Optional recreate or rolling strategy override. Empty preserves the app's current strategy.
+    required: false
+    default: ""
   api_url:
     description: PlugLayer API base URL.
     required: false
@@ -52,13 +68,15 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        umask 077
         PL="${GITHUB_ACTION_PATH}/../_lib/pl.py"
         API_URL="$(printf '%s' "$PLUGLAYER_API_URL" | tr -d '[:space:]')"
         PAYLOAD="$(mktemp)"
-        python3 "$PL" env-payload > "$PAYLOAD"
         BODY="$(mktemp)"
+        trap 'rm -f "$PAYLOAD" "$BODY"' EXIT
+        python3 "$PL" env-payload > "$PAYLOAD"
         CODE="$(curl -sS -o "$BODY" -w '%{http_code}' --retry 3 --retry-delay 3 \
-          -X POST "${API_URL%/}/v1/plugin/apps/${PLUGLAYER_APP_ID}/env/apply" \
+          -X POST "${API_URL%/}/v1/plugin/apps/${PLUGLAYER_APP_ID}/env/import" \
           -H "Authorization: Bearer ${PLUGLAYER_API_TOKEN}" \
           -H "Content-Type: application/json" \
           --data-binary "@$PAYLOAD")"
@@ -72,8 +90,12 @@ runs:
         PLUGLAYER_APP_ID: ${{ inputs.app_id }}
         PLUGLAYER_API_URL: ${{ inputs.api_url }}
         PLUGLAYER_ENV_JSON: ${{ inputs.env_json }}
+        PLUGLAYER_ENV_TEXT: ${{ inputs.env_text }}
+        PLUGLAYER_ENV_FILE: ${{ inputs.env_file }}
+        PLUGLAYER_ENV_FORMAT: ${{ inputs.env_format }}
         PLUGLAYER_MERGE: ${{ inputs.merge }}
         PLUGLAYER_RESTART_MODE: ${{ inputs.restart_mode }}
+        PLUGLAYER_REDEPLOY_STRATEGY: ${{ inputs.redeploy_strategy }}
 
     - id: wait
       shell: bash
