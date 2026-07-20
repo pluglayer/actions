@@ -5,18 +5,22 @@ Subcommands:
   detail <body_file>                 print best-effort error detail from an API response body
   outputs <body_file> [k[=path]...]  unwrap the ok/data envelope and append k=value lines to $GITHUB_OUTPUT
   build-args                         print KEY=VALUE lines parsed from $PLUGLAYER_BUILD_ENV_JSON
-  env-payload                        print the env-apply JSON payload from $PLUGLAYER_ENV_JSON/$PLUGLAYER_MERGE/$PLUGLAYER_RESTART_MODE
+  env-payload                        print a secure env-import payload from the PLUGLAYER_ENV_* inputs
   wait-task <task_id>                poll the task until a terminal status; writes final_status to $GITHUB_OUTPUT
 """
 from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+import stat
 import sys
 import time
 import urllib.request
 
 TERMINAL = {"completed", "failed", "cancelled"}
+MAX_ENV_INPUT_BYTES = 64 * 1024
+ENV_FORMATS = {"auto", "dotenv", "json", "yaml"}
 
 
 def _read_json(path):
@@ -94,17 +98,93 @@ def cmd_build_args(_args):
     return 0
 
 
+def _env_file_content(raw_path):
+    path = Path(raw_path)
+    if path.is_symlink():
+        raise ValueError("env_file must be a regular file, not a symlink or special file")
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"env_file could not be read: {exc}") from exc
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError("env_file must be a regular file, not a symlink or special file")
+        with os.fdopen(descriptor, "rb") as fh:
+            descriptor = -1
+            data = fh.read(MAX_ENV_INPUT_BYTES + 1)
+        if len(data) > MAX_ENV_INPUT_BYTES:
+            raise ValueError(f"env_file must be at most {MAX_ENV_INPUT_BYTES} bytes")
+        return data.decode("utf-8"), path.suffix.lower()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"env_file must be a readable UTF-8 file: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def cmd_env_payload(_args):
-    raw = os.environ.get("PLUGLAYER_ENV_JSON", "").strip()
-    env_vars = json.loads(raw) if raw else {}
-    if not isinstance(env_vars, dict):
-        print("env_json must be a JSON object", file=sys.stderr)
+    raw_json = os.environ.get("PLUGLAYER_ENV_JSON", "").strip()
+    env_text = os.environ.get("PLUGLAYER_ENV_TEXT", "")
+    env_file = os.environ.get("PLUGLAYER_ENV_FILE", "").strip()
+    sources = sum(bool(value) for value in (raw_json, env_text, env_file))
+    if sources > 1:
+        print("provide only one of env_json, env_text, or env_file", file=sys.stderr)
         return 1
-    print(json.dumps({
-        "env_vars": env_vars,
+
+    selected_format = os.environ.get("PLUGLAYER_ENV_FORMAT", "auto").strip().lower() or "auto"
+    if selected_format not in ENV_FORMATS:
+        print("env_format must be one of auto, dotenv, json, or yaml", file=sys.stderr)
+        return 1
+
+    payload = {
         "merge": os.environ.get("PLUGLAYER_MERGE", "true").lower() != "false",
         "restart_mode": os.environ.get("PLUGLAYER_RESTART_MODE", "restart"),
-    }))
+    }
+    strategy = os.environ.get("PLUGLAYER_REDEPLOY_STRATEGY", "").strip()
+    if strategy:
+        payload["redeploy_strategy"] = strategy
+
+    try:
+        if raw_json:
+            if len(raw_json.encode("utf-8")) > MAX_ENV_INPUT_BYTES:
+                raise ValueError(f"env_json must be at most {MAX_ENV_INPUT_BYTES} bytes")
+            def unique_object(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        display_key = key if len(key) <= 80 else f"{key[:77]}..."
+                        raise ValueError(f"duplicate env_json key '{display_key}'")
+                    result[key] = value
+                return result
+
+            env_vars = json.loads(
+                raw_json,
+                object_pairs_hook=unique_object,
+                parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"invalid JSON number '{value}'")),
+            )
+            if not isinstance(env_vars, dict):
+                raise ValueError("env_json must be a JSON object")
+            payload.update({"content": raw_json, "input_format": "json"})
+        elif env_file:
+            content, suffix = _env_file_content(env_file)
+            if selected_format == "auto":
+                selected_format = {".json": "json", ".yaml": "yaml", ".yml": "yaml"}.get(suffix, "dotenv")
+            payload.update({"content": content, "input_format": selected_format})
+        elif env_text:
+            if len(env_text.encode("utf-8")) > MAX_ENV_INPUT_BYTES:
+                raise ValueError(f"env_text must be at most {MAX_ENV_INPUT_BYTES} bytes")
+            payload.update({"content": env_text, "input_format": selected_format})
+        else:
+            if not payload["merge"]:
+                raise ValueError("merge=false requires an explicit env_json, env_text, or env_file source")
+            payload["env_vars"] = {}
+    except (json.JSONDecodeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(json.dumps(payload))
     return 0
 
 
