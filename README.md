@@ -1,5 +1,33 @@
 # PlugLayer Reusable GitHub Actions
 
+## GitHub OIDC deployments (preferred for new workflows)
+
+The plugin's setup skill connects an existing app to one repository, branch and
+workflow, then generates the exact YAML. The job needs `contents: read` and
+`id-token: write`. It uses `github/build-oci-image` followed by
+`github/deploy-oidc`, both pinned to a published immutable commit.
+
+`deploy-oidc` requests a GitHub identity for the configured audience, exchanges it
+for a 15-minute app-scoped credential, uploads in retry-safe chunks, queues the
+existing app's rollout and waits for its task result. It renews credentials during
+long jobs. Lost completion responses are recovered through the upload receipt;
+the action never blindly submits a duplicate rollout. It accepts no permanent
+PlugLayer key and does not select or expose registry credentials.
+
+Inputs: `connection_id`, `app_id`, `archive_path`, `image_tag`; optional `api_url`,
+`audience`, `env_json`, `wait_timeout_seconds`. Outputs: `task_id`, `final_status`.
+Existing runtime variables are preserved and optional `env_json` values are merged.
+A successful identity exchange alone is not a successful rollout.
+
+The initial release supports direct `push` workflows on the connected branch.
+Pull requests, environment subjects and reusable workflows are rejected. The
+backend must configure the published Actions commit before generating workflows.
+Run helper checks with `python -m pytest github/tests` before publishing.
+
+The key-based actions documented below remain compatibility paths for existing
+workflows. New plugin-generated workflows use the OIDC action above.
+
+
 Composite actions used by PlugLayer-generated CI/CD workflows. Reference them as `pluglayer/actions/github/<name>@main`.
 
 A typical deploy job:

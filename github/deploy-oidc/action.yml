@@ -1,0 +1,49 @@
+name: Deploy to PlugLayer with GitHub identity
+description: Authenticate automatically, upload an image in retry-safe chunks, and wait for the app deployment.
+inputs:
+  connection_id:
+    description: Backend-owned GitHub deployment connection ID (not a secret).
+    required: true
+  app_id:
+    description: Existing PlugLayer app ID.
+    required: true
+  archive_path:
+    description: Docker or OCI archive produced by the build action.
+    required: true
+  image_tag:
+    description: Image version, normally the Git commit SHA.
+    required: true
+  api_url:
+    description: Public PlugLayer HTTPS API origin.
+    default: https://api.pluglayer.com
+  audience:
+    description: Audience configured by the PlugLayer backend.
+    default: https://api.pluglayer.com/github-actions
+  env_json:
+    description: Optional runtime variables to merge; existing variables are retained.
+    default: ""
+  wait_timeout_seconds:
+    description: Maximum rollout wait after the upload completes.
+    default: "1800"
+outputs:
+  task_id:
+    description: Deployment task ID.
+    value: ${{ steps.deploy.outputs.task_id }}
+  final_status:
+    description: Verified final rollout status.
+    value: ${{ steps.deploy.outputs.final_status }}
+runs:
+  using: composite
+  steps:
+    - id: deploy
+      shell: bash
+      run: python3 "${GITHUB_ACTION_PATH}/../_lib/oidc_deploy.py"
+      env:
+        PLUGLAYER_CONNECTION_ID: ${{ inputs.connection_id }}
+        PLUGLAYER_APP_ID: ${{ inputs.app_id }}
+        PLUGLAYER_ARCHIVE_PATH: ${{ inputs.archive_path }}
+        PLUGLAYER_IMAGE_TAG: ${{ inputs.image_tag }}
+        PLUGLAYER_API_URL: ${{ inputs.api_url }}
+        PLUGLAYER_OIDC_AUDIENCE: ${{ inputs.audience }}
+        PLUGLAYER_ENV_JSON: ${{ inputs.env_json }}
+        PLUGLAYER_WAIT_TIMEOUT: ${{ inputs.wait_timeout_seconds }}
